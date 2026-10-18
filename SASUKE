@@ -1,0 +1,430 @@
+-- =============================================
+-- Tier 6: VBT_CLAN OPTIMIZED KILL AURA (ModuleScripts)
+-- =============================================
+-- Controls: Press 'VBT_AURA' to toggle ON/OFF
+-- Features: Auto-targets nearest enemy, rate-limited attacks, optimized performance
+-- =============================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+local StarterGui = game:GetService("StarterGui")
+
+-- =============================================
+-- CONFIGURATION
+-- =============================================
+local attackDelay = 0
+local hitMultiplier = 3
+local attackBurst = 3
+local CONFIG = {
+    Range = 27,                    -- Attack range in studs
+    MaxAttacksPerSecond = 10,       -- Max attacks per second (avoid rate limits)
+    BurstSize = 2,                 -- Attacks per burst
+    ScanInterval = 0,            -- How often to scan for targets
+    LagThreshold = 0.10,           -- Performance threshold
+}
+
+-- =============================================
+-- FIND ATTACK REMOTE
+-- =============================================
+local function findRemote()
+    print("🔍 Scanning for attack remote...")
+    
+    -- Check common paths first
+    local possiblePaths = {
+        ReplicatedStorage:FindFirstChild("Systems") and ReplicatedStorage.Systems:FindFirstChild("ActionsSystem") and 
+ReplicatedStorage.Systems.ActionsSystem.Network:FindFirstChild("Attack"),
+
+ReplicatedStorage:FindFirstChild("Systems") and 
+ReplicatedStorage.Systems:FindFirstChild("ActionsSystem") and ReplicatedStorage.Systems.ActionsSystem.Network:FindFirstChild("Attack"),
+        ReplicatedStorage:FindFirstChild("Systems") and ReplicatedStorage.Systems:FindFirstChild("Combat") and ReplicatedStorage.Systems.Combat:FindFirstChild("Attack"),
+        ReplicatedStorage:FindFirstChild("Combat") and ReplicatedStorage.Combat:FindFirstChild("Attack"),
+        ReplicatedStorage:FindFirstChild("Game") and ReplicatedStorage.Game:FindFirstChild("Attack"),
+        ReplicatedStorage:FindFirstChild("Attack"),
+        ReplicatedStorage:FindFirstChild("Remote") and ReplicatedStorage.Remote:FindFirstChild("Attack"),
+    }
+    
+    for _, remote in ipairs(possiblePaths) do
+        if remote and (remote:IsA("RemoteEvent") or remote:IsA("RemoteFunction")) then
+            print("✅ Found remote:", remote:GetFullName())
+            return remote
+        end
+    end
+    
+    -- Deep scan as fallback
+    local function deepScan(folder)
+        for _, child in folder:GetChildren() do
+            if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
+                if child.Name:lower():find("attack") or child.Name:lower():find("combat") or child.Name:lower():find("damage") or child.Name:lower():find("hit") then
+                    print("✅ Found remote via deep scan:", child:GetFullName())
+                    return child
+                end
+            end
+            if child:IsA("Folder") or child:IsA("Model") then
+                local found = deepScan(child)
+                if found then return found end
+            end
+        end
+        return nil
+    end
+    
+    local found = deepScan(ReplicatedStorage)
+    if found then return found end
+    
+    error("❌ Could not find attack remote! Try updating the paths.")
+    return nil
+end
+
+local Remote = findRemote()
+local isRemoteEvent = Remote and Remote:IsA("RemoteEvent")
+
+if not Remote then
+    warn("❌ No attack remote found! Script will not work.")
+    return
+end
+
+-- =============================================
+-- ENTITY MANAGER (Caches targets for performance)
+-- =============================================
+local EntityManager = {
+    cache = {},
+    lastScan = 0,
+    
+    refresh = function(self)
+        local newCache = {}
+        
+        -- Scan players
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                local char = player.Character
+                if char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then
+                    table.insert(newCache, {
+                        character = char,
+                        hrp = char.HumanoidRootPart,
+                        humanoid = char.Humanoid,
+                        type = "player",
+                        player = player
+                    })
+                end
+            end
+        end
+        
+        -- Scan NPCs/Entities
+        for _, child in Workspace:GetChildren() do
+            if child:IsA("Model") and child ~= LocalPlayer.Character then
+                local hrp = child:FindFirstChild("HumanoidRootPart")
+                local hum = child:FindFirstChild("Humanoid")
+                if hrp and hum and hum.Health > 0 then
+                    table.insert(newCache, {
+                        character = child,
+                        hrp = hrp,
+                        humanoid = hum,
+                        type = "npc"
+                    })
+                end
+            end
+        end
+        
+        self.cache = newCache
+        self.lastScan = tick()
+    end,
+    
+    getNearest = function(self, origin, maxDist)
+        local best = nil
+        local bestDist = maxDist * maxDist
+        
+        for _, target in ipairs(self.cache) do
+            if target.hrp and target.hrp.Position then
+                local dx = target.hrp.Position.X - origin.X
+                local dy = target.hrp.Position.Y - origin.Y
+                local dz = target.hrp.Position.Z - origin.Z
+                local distSq = dx*dx + dy*dy + dz*dz
+                
+                if distSq < bestDist then
+                    bestDist = distSq
+                    best = target
+                end
+            end
+        end
+        
+        return best
+    end
+}
+
+-- =============================================
+-- NOTIFICATION FUNCTION
+-- =============================================
+local function notify(text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "🔥 VBT_ SASUKE KILL AURA",
+            Text = text,
+            Duration = 3
+        })
+    end)
+    print("🔥VBT_ SASUKE KILL AURA", text)
+end
+
+-- =============================================
+-- KILL AURA LOGIC
+-- =============================================
+local isEnabled = false
+local renderConnection = nil
+local lastAttackTime = 0
+local attackCounter = 0
+local rateLimitHit = false
+local rateLimitRecoveryTime = 0
+
+local function sendAttack(target)
+    if not target or not target.character then return false end
+    
+    -- Rate limit check
+    if rateLimitHit then
+        if tick() - rateLimitRecoveryTime < 3 then
+            return false
+        else
+            rateLimitHit = false
+            print("🔄 Rate limit recovered, resuming attacks")
+        end
+    end
+    
+    -- Attack speed check
+    local now = tick()
+    local timeBetweenAttacks = 1 / CONFIG.MaxAttacksPerSecond
+    if now - lastAttackTime < timeBetweenAttacks then
+        return false
+    end
+    
+    local success = false
+    
+    -- Try multiple attack formats
+    local attempts = {
+        function() 
+            if isRemoteEvent then 
+                Remote:FireServer(target.character, 1) 
+            else 
+                Remote:InvokeServer(target.character, 1) 
+            end 
+            return true 
+        end,
+        function() 
+            if isRemoteEvent then 
+                Remote:FireServer(target.character, target.humanoid, 1) 
+            else 
+                Remote:InvokeServer(target.character, target.humanoid, 1) 
+            end 
+            return true 
+        end,
+        function() 
+            if isRemoteEvent then 
+                Remote:FireServer(target.hrp, 1) 
+            else 
+                Remote:InvokeServer(target.hrp, 1) 
+            end 
+            return true 
+        end,
+        function() 
+            if isRemoteEvent then 
+                Remote:FireServer(target.character, 10) 
+            else 
+                Remote:InvokeServer(target.character, 10) 
+            end 
+            return true 
+        end,
+        function() 
+            if isRemoteEvent then 
+                Remote:FireServer(target.character) 
+            else 
+                Remote:InvokeServer(target.character) 
+            end 
+            return true 
+        end
+    }
+    
+    for _, attempt in ipairs(attempts) do
+        local result, err = pcall(attempt)
+        if result then
+            success = true
+            lastAttackTime = now
+            attackCounter = attackCounter + 1
+            break
+        else
+            if err and string.find(err:lower(), "rate") then
+                rateLimitHit = true
+                rateLimitRecoveryTime = now
+                print("⚠️ Rate limit hit! Pausing for 3 seconds...")
+                break
+            end
+        end
+    end
+    
+    return success
+end
+
+local function attackLoop()
+    if not isEnabled then return end
+    
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    -- Refresh target cache periodically
+    if tick() - EntityManager.lastScan > CONFIG.ScanInterval then
+        EntityManager:refresh()
+    end
+    
+    -- Get nearest target
+    local target = EntityManager:getNearest(hrp.Position, CONFIG.Range)
+    if not target then return end
+    
+    -- Burst attacks
+    for i = 1, CONFIG.BurstSize do
+        if sendAttack(target) then
+            if i < CONFIG.BurstSize then task.wait(0.03) end
+        else
+            break
+        end
+    end
+end
+
+-- =============================================
+-- TOGGLE FUNCTION
+-- =============================================
+local function toggle()
+    isEnabled = not isEnabled
+    
+    if isEnabled then
+        if not renderConnection then
+            renderConnection = RunService.Heartbeat:Connect(attackLoop)
+        end
+        EntityManager:refresh()
+        attackCounter = 0
+        rateLimitHit = false
+        notify("✅ Kill Aura ENABLED (Press 🔥VBT_AURA to disable)")
+        print("🔴 Kill Aura DISABLED - Press 🔥VBT_AURA to enable")
+    else
+        if renderConnection then
+            renderConnection:Disconnect()
+            renderConnection = nil
+        end
+        notify("❌ Kill Aura DISABLED")
+        print("🔵 Kill Aura DISABLED - Press O to enable")
+    end
+    
+    -- Update GUI button if exists
+    if _G.VOXEL_BUTTON then
+        _G.VOXEL_BUTTON.Text = isEnabled and "🔥VBT_AURA " or "OFF VBT_AURA "
+        _G.VOXEL_BUTTON.BackgroundColor3 = isEnabled and Color3.fromRGB(60, 200, 60) or Color3.fromRGB(60, 60, 80)
+    end
+end
+
+-- =============================================
+-- KEYBIND (Press SHADOW HUB to toggle)
+-- =============================================
+UserInputService.InputBegan:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.O and input.UserInputType == Enum.UserInputType.Keyboard then
+        toggle()
+    end
+end)
+
+-- =============================================
+-- CREATE GUI
+-- =============================================
+local function createGUI()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "VoxelKillAura"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = CoreGui
+
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 130, 0, 110)
+    mainFrame.Position = UDim2.new(0.85, 0, 0.7, 0)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+    mainFrame.BackgroundTransparency = 0.15
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Active = true
+    mainFrame.Draggable = true
+    mainFrame.Parent = screenGui
+    Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
+
+    -- Toggle Button
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Size = UDim2.new(0.8, 0, 0.35, 0)
+    toggleBtn.Position = UDim2.new(0.1, 0, 0.1, 0)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    toggleBtn.BorderSizePixel = 0
+    toggleBtn.Font = Enum.Font.GothamBold
+    toggleBtn.Text = "OFF VBT_AURA "
+    toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    toggleBtn.TextSize = 13
+    toggleBtn.Parent = mainFrame
+    Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 8)
+    _G.VOXEL_BUTTON = toggleBtn
+
+    -- Status Label
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Size = UDim2.new(0.8, 0, 0.25, 0)
+    statusLabel.Position = UDim2.new(0.1, 0, 0.5, 0)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.Text = "Status: Idle"
+    statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    statusLabel.TextSize = 11
+    statusLabel.Parent = mainFrame
+
+    -- Stats Label
+    local statsLabel = Instance.new("TextLabel")
+    statsLabel.Size = UDim2.new(0.8, 0, 0.2, 0)
+    statsLabel.Position = UDim2.new(0.1, 0, 0.75, 0)
+    statsLabel.BackgroundTransparency = 1
+    statsLabel.Font = Enum.Font.Gotham
+    statsLabel.Text = "Attacks: 0"
+    statsLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    statsLabel.TextSize = 10
+    statsLabel.Parent = mainFrame
+
+    -- Toggle button click
+    toggleBtn.Activated:Connect(toggle)
+
+    -- Update stats every second
+    spawn(function()
+        while true do
+            task.wait(1)
+            statsLabel.Text = string.format("Attacks: %d | Targets: %d", attackCounter, #EntityManager.cache)
+            
+            if rateLimitHit then
+                statusLabel.Text = "Status: Rate Limited ⚠️"
+                statusLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+            elseif isEnabled then
+                statusLabel.Text = "Status: Active ✅"
+                statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+            else
+                statusLabel.Text = "Status: Idle"
+                statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+            end
+        end
+    end)
+end
+
+-- =============================================
+-- INITIALIZE
+-- =============================================
+print("🔥 Loading Voxel Optimized Kill Aura...")
+print("📡 Remote found:", Remote and Remote:GetFullName() or "None")
+print("📊 Press 'SHADOW HUB' to toggle ON/OFF")
+print("⚡ Rate limit: " .. CONFIG.MaxAttacksPerSecond .. " attacks/sec")
+print("🎯 Range: " .. CONFIG.Range .. " studs")
+print("🔄 Auto-recovery enabled for rate limits")
+
+-- Initial scan
+EntityManager:refresh()
+pcall(createGUI)
+
+notify("🔥 Voxel Kill Aura loaded! Press 🔥VBT_AURA to toggle")
+print("✅ Voxel Kill Aura loaded! Press 🔥VBT_AURA to start.")
