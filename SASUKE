@@ -1,24 +1,30 @@
--- Delta Executor Custom Red UI Script
+-- Delta Executor RGB UI Script with Emoji
 local ScreenGui = Instance.new("ScreenGui")
 local MainFrame = Instance.new("Frame")
 local UICorner = Instance.new("UICorner")
 local TextLabel = Instance.new("TextLabel")
 
 -- ScreenGui Setup
-ScreenGui.Name = "DeltaRedUIScript"
+ScreenGui.Name = "DeltaRGBUIScript"
 ScreenGui.Parent = game.CoreGui
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
--- MainFrame Setup (Red UI)
+-- MainFrame Setup
 MainFrame.Name = "MainFrame"
 MainFrame.Parent = ScreenGui
-MainFrame.BackgroundColor3 = Color3.fromRGB(180, 0, 0) -- Dark Red Color
-MainFrame.Position = UDim2.new(0.5, -175, 0.5, -50)
-MainFrame.Size = UDim2.new(0, 350, 0, 100)
+MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30) -- Dark background so RGB pops out
+MainFrame.Position = UDim2.new(0.5, -200, 0.5, -50)
+MainFrame.Size = UDim2.new(0, 400, 0, 100)
+MainFrame.BorderSizePixel = 0
 
--- Rounded Corners for UI
+-- Rounded Corners
 UICorner.CornerRadius = UDim.new(0, 12)
 UICorner.Parent = MainFrame
+
+-- RGB Stroke (Border effect that changes colors)
+local UIStroke = Instance.new("UIStroke")
+UIStroke.Parent = MainFrame
+UIStroke.Thickness = 4
 
 -- TextLabel Setup
 TextLabel.Parent = MainFrame
@@ -26,9 +32,18 @@ TextLabel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 TextLabel.BackgroundTransparency = 1.00
 TextLabel.Size = UDim2.new(1, 0, 1, 0)
 TextLabel.Font = Enum.Font.GothamBold
-TextLabel.Text = "BETE BAAP SE PANGA NHI SENPAI"
-TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255) -- White Text on Red Background
+TextLabel.Text = "BETE BAAP SE PANGA NHI SENPAI 🖕"
+TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 TextLabel.TextScaled = true
-TextLabel.TextSize = 18.00
+TextLabel.TextSize = 16.00
 TextLabel.TextWrapped = true
 
+-- RGB Loop to animate colors smoothly
+task.spawn(function()
+    while true do
+        for i = 0, 1, 0.005 do
+            UIStroke.Color = Color3.fromHSV(i, 1, 1)
+            task.wait(0.03)
+        end
+    end
+end)
